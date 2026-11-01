@@ -1,0 +1,453 @@
+---
+title: 'Batch-Aware Bayesian Optimization of an Ion Source'
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Batch-Aware Bayesian Optimization of a Synthetic Analytical Acquisition Method}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+<style type="text/css">
+#generate-the-initial-experiment .sourceCode,
+#fit-and-propose .sourceCode,
+#recommend-a-condition .sourceCode {
+  max-width: 100%;
+  overflow-x: auto;
+}
+img {
+  max-width: 100%;
+  height: auto;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = '#>',
+  fig.align = 'center',
+  warning = FALSE,
+  message = FALSE
+)
+options(width = 150)
+library(BatchBO)
+```
+
+## Overview
+
+This vignette demonstrates a batch-aware Bayesian optimization
+campaign on a conventional benchmarking response surface. Here, the Hartmann-6
+response surface, with input variables scaled and renamed to mimic more familiar
+ESI-MS source-optimization parameters, is combined with between-batch
+variation and residual measurement noise. 
+
+## Create the study
+
+For demonstration of the optimization procedure, define the true (but normally
+unknown) response surface. The campaign maximizes `Ion_response`, representing
+peak area.
+
+```{r create-surface}
+true_surface <- demoSurface(
+  batch_sd       = 200, #between-batch variation
+  residual_sd    = 100, #residual measurement noise
+  interpretation = 'mass_spectrometry'
+)
+```
+
+Establish the design space of the optimization, by defining each factor
+alongside their lower and upper boundaries.
+
+```{r design-space}
+space <- design_space(
+  def_factor('Capillary_voltage' ,     lower = 2500, upper = 4500),
+  def_factor('Nebulizer_pressure',     lower = 20,   upper = 50),
+  def_factor('Nozzle_voltage',         lower = 0,    upper = 2000),
+  def_factor('Drying_gas_flow',        lower = 8,    upper = 12),
+  def_factor('Drying_gas_temperature', lower = 200,  upper = 350),
+  def_factor('Sheath_gas_flow',        lower = 8,    upper = 12)
+)
+```
+
+Factors are expressed on a linear scale by default; the `transform` argument of
+`def_factor()` supports a log10 domain where that is more natural.
+
+A fixed reference condition is run in every batch. 
+Its replicates within a batch measure the residual noise directly, 
+and its repetition across batches shows how much each batch is shifted. 
+
+
+```{r reference}
+#Define the fixed reference condition
+reference <- data.frame(
+  Capillary_voltage      = 3500,
+  Nebulizer_pressure     = 35,
+  Nozzle_voltage         = 1000,
+  Drying_gas_flow        = 10,
+  Drying_gas_temperature = 275,
+  Sheath_gas_flow        = 10
+)
+```
+
+The campaign combines the design space, the response, the optimization
+direction, the reference condition, and the number of reference replicates per
+batch.
+
+```{r create-study}
+#Create the empty campaign
+study <- campaign(
+  design     = space,
+  response   = 'Ion_response',
+  direction  = 'maximize',
+  controls   = reference,
+  replicates = 2
+)
+```
+
+## Generate the initial experiment
+
+Fifteen novel conditions are generated using Latin hypercube sampling (LHS) and
+allocated across three laboratory batches. 
+
+```{r initial-design}
+study <- proposeSpaceFilling(
+  study,
+  n_batches = 3, #Number of batches
+  q = 5, #Number of experiments per batch
+  method = 'lhs',
+  seed = 123,
+  batch = c('LHS_01', 'LHS_02', 'LHS_03')
+)
+
+#Extract the proposals; file = 'LHS.csv' also writes them to disk
+LHS <- proposal(study, c('LHS_01', 'LHS_02', 'LHS_03')) 
+
+print(LHS, row.names = FALSE, digits = 1)
+```
+
+In a real study the responses would now come back from instrument acquisition
+and data processing. Under the hood of this vignette, `simulateBatch()`
+samples from the hidden surface at the LHS conditions and adds the relevant batch and residual variation.
+
+All three initial batches are completed before anything is fitted, so that the
+first surrogate already has some information about how much batches differ.
+
+```{r simulate-initial, include=FALSE}
+LHS_batches <- split(LHS, LHS$Batch)
+
+for (i in seq_along(LHS_batches)) {
+  LHS_batches[[i]]$Ion_response <- simulateBatch(
+    true_surface,
+    LHS_batches[[i]],
+    seed = i
+  )
+}
+
+LHS_completed <- do.call(rbind, LHS_batches)
+rownames(LHS_completed) <- NULL
+```
+
+```{r complete-initial-design}
+print(LHS_completed, row.names = FALSE, digits = 1)
+```
+
+## Fit and propose
+
+Add the batches and fit the batch-aware Gaussian process (GP):
+
+```{r initial-fit}
+study <- addBatch(study, LHS_completed)
+
+study <- runSurrogate(
+  study,
+  name = 'LHS_fit',
+  kernel = 'matern52',
+  n_starts = 4,
+  maxit = 100,
+  seed = 123
+)
+```
+
+With the GP surrogate established, the next batch is chosen by an acquisition function.
+Here the Kriging Believer (KB) constructs a batch of five by expected
+improvement, treating each chosen point as if its predicted value had been
+measured before choosing the next. The `method`
+argument also accepts `'ts'` and `'qnei'`.
+
+```{r propose-batch-1}
+study <- proposeBatch(
+  study,
+  batch = 'B1',
+  surrogate_name = 'LHS_fit',
+  method = 'kb',
+  q = 5,
+  seed = 124,
+  n_screen = 128,
+  restarts = 2,
+  maxit = 30
+)
+
+B1 <- proposal(study, 'B1')
+print(B1, row.names = FALSE, digits = 1)
+```
+
+
+There is often a considerable time gap between experiments. For longer periods
+between batches the `study` object can be saved while the experimental data is
+collected.
+
+```{r save-resume}
+saveRDS(study, file = 'FirstAcquisition.rdata')
+study <- readRDS('FirstAcquisition.rdata')
+```
+
+```{r simulate-batch-1, include=FALSE}
+B1_completed <- B1
+B1_completed$Ion_response <- simulateBatch(
+  true_surface,
+  B1_completed,
+  seed = 124
+)
+```
+
+As with the initial space-filling design, the measured responses are attached to
+the stored run sheet once the batch has been acquired.
+
+```{r completed-batch-1}
+print(B1_completed, row.names = FALSE, digits = 1)
+```
+
+Add the newest batch to the campaign object. A new GP surrogate model can now be fit.
+
+```{r return-batch-1}
+study <- addBatch(study, B1_completed)
+
+study <- runSurrogate(
+  study,
+  name = 'B1_fit',
+  kernel = 'matern52',
+  n_starts = 4,
+  maxit = 100,
+  seed = 123
+)
+```
+
+The same propose, return, and refit cycle is repeated until the campaign has
+enough information for a satisfactory recommendation. The campaign contains ten
+adaptive batches overall, giving 91 runs across 13 batches in total.
+
+```{r continue-campaign, include=FALSE}
+current_fit <- 'B1_fit'
+
+for (batch_index in 2:10) {
+  batch_name <- paste0('B', batch_index)
+
+  study <- proposeBatch(
+    study,
+    batch = batch_name,
+    surrogate_name = current_fit,
+    method = 'kb',
+    q = 5,
+    seed = 123 + batch_index,
+    randomize = TRUE,
+    reference_order = 'spread',
+    n_screen = 128,
+    restarts = 2,
+    maxit = 30
+  )
+
+  returned <- proposal(study, batch_name)
+  returned$Ion_response <- simulateBatch(
+    true_surface,
+    returned,
+    seed = 123 + batch_index
+  )
+
+  study <- addBatch(study, returned)
+
+  current_fit <- paste0(batch_name,'_fit')
+  study <- runSurrogate(
+    study,
+    name = current_fit,
+    kernel = 'matern52',
+    n_starts = 4,
+    maxit = 100,
+    seed = 123
+  )
+}
+```
+
+Earlier fits are not replaced but kept alongside the newer ones:
+
+```{r stored-fits}
+surrogateNames(study)
+```
+
+`surrogate(study)` returns the most recent fit that matches the current data.
+Any earlier fit can be retrieved by name and inspected in the same way, for
+example `summary(surrogate(study, 'LHS_fit'))` for the fit to the three initial
+batches. For an overview of everything stored in the campaign, use `summary(study)`.
+
+## Recommend a condition
+
+Once all batches have been run, the recommendation maximizes the fitted batch-free posterior mean to find the condition at which the model believes the response is highest.
+
+```{r recommendation}
+study <- recommend(
+  study,
+  name = 'final_recommendation',
+  surrogate_name = 'B10_fit',
+  n_screen = 8192,
+  restarts = 32,
+  maxit = 100,
+  seed = 123
+)
+
+recommended_condition <- recommendation(study, 'final_recommendation')
+
+recommendation_table <-
+  recommended_condition[, c(factorNames(study), 'prediction')]
+
+print(recommendation_table, row.names = FALSE, digits = 1)
+```
+
+## Follow improvement
+
+The completed campaign is evaluated retrospectively with the final surrogate,
+so that every historical batch is corrected using the same fitted model.
+
+The raw curve is the largest measured response observed by each batch and
+therefore contains both batch shifts and measurement noise. The batch-adjusted
+curve first removes the fitted batch offsets. 
+
+```{r cumulative-best, fig.width=9, fig.height=5.5}
+study <- runCumulativeBest(
+  study,
+  name = 'cumulative_best',
+  surrogate_name = 'B10_fit'
+)
+
+plotCumulativeBest(
+  study,
+  'cumulative_best',
+  ylab = 'Best signal among tested conditions'
+)
+```
+
+For this demonstration the true optimum is known, and can be used to evaluate the
+optimization performance. 
+
+```{r check-optimum}
+check <- demoCompare(true_surface, recommended_condition)
+round(check, 1)
+```
+
+The recommendation attains a true response of
+`r round(check['Ion_response', 'condition'])` compared with the simulator
+optimum of `r round(check['Ion_response', 'optimum'])`, corresponding to a
+regret of `r round(check['regret', 'condition'])` response units.
+
+The fitted variance components can be inspected in the same way. Because the GP
+is fitted to a standardized response, they are rescaled to the units of
+`Ion_response` before being compared with their true values.
+
+```{r variance-components}
+final_fit <- surrogate(study, 'B10_fit')
+final_summary <- summary(final_fit, scaled = FALSE)
+fitted_sd <- setNames(
+  final_summary$variance_components$sd,
+  final_summary$variance_components$component
+)
+
+round(rbind(
+  'Simulated truth' = c(batch_sd    = true_surface$batch_sd,
+                        residual_sd = true_surface$residual_sd),
+  'Fitted GP'       = c(batch_sd    = fitted_sd[['Between-Batch']],
+                        residual_sd = fitted_sd[['Residual']])
+), 1)
+```
+
+The fitted model correctly identifies the between-batch variation as larger
+than the residual variation and estimates a standard deviation ratio close to
+the simulated value of two. Though it somewhat underestimates both
+components. 
+
+## Interpret the fitted surface
+
+```{r sobol, fig.width=9, fig.height=6.5}
+study <- runSobol(
+  study,
+  name = 'final_sobol',
+  surrogate_name = 'B10_fit',
+  N = 4096,
+  second_order = TRUE,
+  seed = 123
+)
+
+plotSobol(
+  study,
+  'final_sobol',
+  stacked = TRUE
+)
+
+plotSobolInteractions(
+  study,
+  'final_sobol'
+)
+```
+
+The stacked bars distinguish each factor's first-order contribution from its
+contribution through interactions, $S_{T_i}-S_i$. The pairwise plot then resolves
+the second-order terms $S_{ij}$, identifying which pairs contribute to that
+interaction signal. 
+
+
+Marginal response profiles complement the Sobol indices by showing the direction
+and shape of each factor's association with the fitted batch-free response. Each
+curve averages the posterior mean over the remaining factors rather than
+holding them at a single condition.
+
+```{r main-effects, fig.width=9, fig.height=6}
+study <- runMainEffects(
+  study,
+  name = 'final_main_effects',
+  surrogate_name = 'B10_fit',
+  grid = 51,
+  N = 512,
+  seed = 123
+)
+
+plotMainEffects(
+  study,
+  'final_main_effects',
+  columns = 3,
+  shared_y = TRUE,
+  show_design = TRUE,
+  ylab = 'Batch-free signal'
+)
+```
+
+The pairwise response surfaces below are conditional slices at the final
+recommendation. For each pair of factors, the two displayed vary over their experimental ranges,
+while the remaining four are held at their recommended values. White circles
+show completed sample conditions and gold diamonds show the recommendation.
+
+```{r response-surfaces, fig.width=9, fig.height=9, fig.keep='last'}
+study <- runResponseSurfaces(
+  study,
+  name = 'final_surfaces',
+  surrogate_name = 'B10_fit',
+  type = 'slice',
+  grid = 51,
+  at = 'recommendation',
+  recommendation_name = 'final_recommendation'
+)
+
+plotResponseSurfaces(
+  study,
+  'final_surfaces',
+  columns = 3,
+  shared_scale = TRUE,
+  show_observations = TRUE,
+  recommendation_name = 'final_recommendation'
+)
+```

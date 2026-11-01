@@ -1,0 +1,60 @@
+Package: BatchBO
+Type: Package
+Title: Batch-Aware Bayesian Optimization for Laboratory Experiments
+Version: 0.1.0
+Authors@R: c(
+    person(
+      given = "Mathias",
+      family = "Brevik",
+      email = "matbre17@gmail.com",
+      role = c("aut", "cre")
+    )
+  )
+Description: Provides a batch-aware Gaussian-process workflow for sequential
+    optimization of laboratory experiments. The package supports space-filling
+    starting designs, mixed-effects Gaussian-process fitting, batched
+    acquisition functions, reproducible run sheets, recommendations, global
+    sensitivity analysis, response-surface visualization, and retrospective
+    monitoring of experimental improvement.
+License: MIT + file LICENSE
+URL: https://github.com/BrevikM/BatchBO
+BugReports: https://github.com/BrevikM/BatchBO/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.2.0)
+Imports:
+    grDevices,
+    graphics,
+    methods,
+    qrng,
+    sensobol (>= 1.2.0),
+    stats,
+    utils
+Suggests:
+    knitr,
+    rmarkdown
+VignetteBuilder: knitr
+Collate:
+    'package.R'
+    'classes.R'
+    'validation.R'
+    'randomness.R'
+    'run-sheet.R'
+    'design.R'
+    'gp-fit.R'
+    'gradients.R'
+    'acquisition.R'
+    'acquisition-kb.R'
+    'acquisition-ts.R'
+    'acquisition-qnei.R'
+    'campaign.R'
+    'demo.R'
+    'provenance.R'
+    'proposal.R'
+    'prediction.R'
+    'recommendation.R'
+    'sobol.R'
+    'effects.R'
+    'cumulative-best.R'

@@ -1,0 +1,12 @@
+^\.git$
+^\.gitignore$
+^\.github$
+^development$
+^README\.md$
+^NEWS\.md$
+^.*\.Rproj$
+^\.Rproj\.user$
+^.*\.tar\.gz$
+^vignettes/FirstAcquisition\.rdata$
+^vignettes/.*\.html$
+^vignettes/.*_files$

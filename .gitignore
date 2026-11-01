@@ -1,0 +1,25 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rcheck/
+*.tar.gz
+
+# Generated analyses and laboratory outputs
+output/
+outputs/
+practitioner_output/
+vignettes/*.html
+vignettes/*.pdf
+vignettes/*.rdata
+vignettes/Rplots.pdf
+vignettes/*_files/
+
+# Local development material
+development/
+inst/notes/
+
+# Local editor and operating-system files
+.DS_Store
+Thumbs.db
+.vscode/
