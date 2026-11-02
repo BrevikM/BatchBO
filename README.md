@@ -57,14 +57,3 @@ Every function has a help page with examples:
 | Follow progress | `?runCumulativeBest` |
 
 `?BatchBO` gives an overview, and `help(package = "BatchBO")` lists every page.
-
-# Accessibility
-
-- Source code: https://github.com/BrevikM/BatchBO
-- Bug reports and questions: https://github.com/BrevikM/BatchBO/issues
-
-# Please cite
-
-```r
-citation("BatchBO")
-```
